@@ -150,6 +150,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->trace_mask = 0;
 }
 
 // Create a user page table for a given process,
@@ -230,6 +231,8 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  p->trace_mask = 0;
+
   release(&p->lock);
 }
 
@@ -294,6 +297,9 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  // copy trace_mask
+  np->trace_mask = p->trace_mask;
 
   release(&np->lock);
 
@@ -692,4 +698,17 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+/// @brief Get the number of processes
+/// @param None
+/// @return Number of processes
+uint64 
+get_numproc(void)
+{
+  uint64 numproc = 0;
+  for (int i = 0; i < NPROC; i++) {
+    numproc += proc[i].state != UNUSED;
+  }
+  return numproc;
 }
