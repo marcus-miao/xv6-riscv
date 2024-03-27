@@ -121,6 +121,13 @@ found:
     return 0;
   }
 
+  p->kpagetable = proc_kpagetable(p);
+  if (p->kpagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -142,6 +149,9 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if (p->kpagetable)
+    free_kvmcopy(p->kpagetable, p->kstack);
+  p->kpagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -181,6 +191,19 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+
+  return pagetable;
+}
+
+pagetable_t
+proc_kpagetable(struct proc *p)
+{
+  pagetable_t pagetable = uvmcreate();
+  if (pagetable == 0)
+    return 0;
+  
+  if (kvmcopy(pagetable, p->kstack) < 0)
+    return 0;
 
   return pagetable;
 }
@@ -473,6 +496,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        load_pagetable(p->kpagetable);
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -482,6 +506,9 @@ scheduler(void)
         found = 1;
       }
       release(&p->lock);
+    }
+    if (found == 0) {
+      kvminithart();
     }
 #if !defined (LAB_FS)
     if(found == 0) {

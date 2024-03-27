@@ -470,3 +470,71 @@ vmprint(pagetable_t pagetable)
   printf("page table %p\n", pagetable);
   printwalk(0, pagetable);
 }
+
+int
+kvmcopy(pagetable_t pagetable, uint64 kstack_va)
+{
+  const int VA_COUNT = 8;
+
+  uint64 va[] = {
+    UART0, VIRTIO0, CLINT, PLIC, KERNBASE, (uint64)etext, TRAMPOLINE, kstack_va
+  };  
+
+  uint64 kstack_pa = kvmpa(kstack_va); 
+  uint64 pa[] = {
+    UART0, VIRTIO0, CLINT, PLIC, KERNBASE, (uint64)etext, (uint64)trampoline, 
+    kstack_pa
+  };
+
+  uint64 sz[] = {
+    PGSIZE, PGSIZE, 0x10000, 0x400000, (uint64)etext-KERNBASE, 
+    PHYSTOP-(uint64)etext, PGSIZE, PGSIZE
+  };
+
+  int perm[] = {
+    PTE_R | PTE_W, PTE_R | PTE_W, PTE_R | PTE_W, PTE_R | PTE_W, PTE_R | PTE_X,
+    PTE_R | PTE_W, PTE_R | PTE_X, PTE_R | PTE_W
+  };
+
+  int i;
+  for (i = 0; i < VA_COUNT; i++) {
+    if (mappages(pagetable, va[i], sz[i], pa[i], perm[i]) < 0) {
+      goto err;
+    }    
+  }
+  return 0;
+
+err:
+  for (int k = 0; k < i; k++) {
+    uvmunmap(pagetable, va[k], PGROUNDUP(sz[i]) / PGSIZE, 0);
+  }
+  uvmfree(pagetable, 0);
+  return -1;
+}
+
+void
+free_kvmcopy(pagetable_t pagetable, uint64 kstack_va)
+{
+  const int VA_COUNT = 8;
+
+  uint64 va[] = {
+    UART0, VIRTIO0, CLINT, PLIC, KERNBASE, (uint64)etext, TRAMPOLINE, kstack_va
+  };  
+
+  uint64 sz[] = {
+    PGSIZE, PGSIZE, 0x10000, 0x400000, (uint64)etext-KERNBASE, 
+    PHYSTOP-(uint64)etext, PGSIZE, PGSIZE
+  };
+
+  for (int i = 0; i < VA_COUNT; i++) {
+    uvmunmap(pagetable, va[i], PGROUNDUP(sz[i]) / PGSIZE, 0);
+  }
+  uvmfree(pagetable, 0);
+}
+
+void
+load_pagetable(pagetable_t pagetable)
+{
+  w_satp(MAKE_SATP(pagetable));
+  sfence_vma();
+}
