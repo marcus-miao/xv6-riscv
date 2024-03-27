@@ -538,3 +538,22 @@ load_pagetable(pagetable_t pagetable)
   w_satp(MAKE_SATP(pagetable));
   sfence_vma();
 }
+
+void
+add_usermappings(pagetable_t kpagetable, pagetable_t upagetable, uint64 sz)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  pte_t *pte;
+  uint64 npages = PGROUNDUP(sz) / PGSIZE;
+  for (uint64 va = 0; va < npages * PGSIZE; va += PGSIZE) {
+    if ((pte = walk(upagetable, va, 0)) == 0)
+      continue;
+    if ((*pte & PTE_V) == 0)
+      continue;
+    if (va >= PLIC)
+      pannic("add_usermappings: va >= PLIC");
+    if (mappages(kpagetable, va, PGSIZE, PTE2PA(*pte), PTE_FLAGS(*pte) >> 1 << 1) < 0)
+      panic("add_usermappings: mappages");
+  }
+  return 0;
+}

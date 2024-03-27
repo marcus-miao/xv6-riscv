@@ -183,6 +183,7 @@ void            vmprint(pagetable_t);
 int             kvmcopy(pagetable_t, uint64);
 void            free_kvmcopy(pagetable_t, uint64);
 void            load_pagetable(pagetable_t);
+int             add_usermappings(pagetable_t, pagetable_t, uint64);
 
 // plic.c
 void            plicinit(void);
