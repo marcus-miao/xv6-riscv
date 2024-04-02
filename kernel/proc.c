@@ -150,7 +150,7 @@ freeproc(struct proc *p)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   if (p->kpagetable)
-    free_kvmcopy(p->kpagetable, p->kstack);
+    free_kpagetable(p->kpagetable, p->kstack, p->sz);
   p->kpagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -202,9 +202,9 @@ proc_kpagetable(struct proc *p)
   if (pagetable == 0)
     return 0;
   
-  if (kvmcopy(pagetable, p->kstack) < 0)
+  if (copy_kpagetable(pagetable, p->kstack) < 0)
     return 0;
-
+  
   return pagetable;
 }
 
@@ -241,9 +241,8 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  uvminit(p->pagetable, p->kpagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
-  add_usermappings(p->kpagetable, p->pagetable, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -267,11 +266,12 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->pagetable, p->kpagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, sz, sz + n, 1);
+    uvmdealloc(p->kpagetable, sz, sz + n, 0);
   }
   p->sz = sz;
   return 0;
@@ -292,7 +292,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kpagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -508,9 +508,7 @@ scheduler(void)
       }
       release(&p->lock);
     }
-    if (found == 0) {
-      kvminithart();
-    }
+    kvminithart();
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
