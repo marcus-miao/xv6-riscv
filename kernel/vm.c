@@ -220,7 +220,7 @@ uvminit(pagetable_t pagetable, pagetable_t kpagetable, uchar *src, uint sz)
   mem = kalloc();
   memset(mem, 0, PGSIZE);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
-  mappages_with_va_limit(kpagetable, 0, PGSIZE, (uint64)mem, PTE_R, PLIC);
+  mappages_with_va_limit(kpagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X, PLIC);
   memmove(mem, src, sz);
 }
 
@@ -240,12 +240,14 @@ uvmalloc(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 new
     mem = kalloc();
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz, 1);
+      uvmdealloc(kpagetable, a, oldsz, 0);
       return 0;
     }
     memset(mem, 0, PGSIZE);
     if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz, 1);
+      uvmdealloc(kpagetable, a, oldsz, 0);
       return 0;
     }
     if (mappages_with_va_limit(kpagetable, a, PGSIZE, (uint64)mem, 
@@ -344,6 +346,7 @@ uvmcopy(pagetable_t old, pagetable_t new, pagetable_t kpagetable, uint64 sz)
 
  err_u:
   uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(kpagetable, 0, i / PGSIZE, 0);
   return -1;
  err_k:
   uvmunmap(new, 0, i / PGSIZE, 1);
@@ -463,17 +466,24 @@ copy_kpagetable(pagetable_t pagetable, uint64 kstack_va)
     PTE_R | PTE_W, PTE_R | PTE_X, PTE_R | PTE_W
   };
 
-  int i;
+  int i, j;
   for (i = 0; i < VA_COUNT; i++) {
-    if (mappages(pagetable, va[i], sz[i], pa[i], perm[i]) < 0) {
-      goto err;
-    }    
+    for (j = 0; j < sz[i]; j += PGSIZE) {
+      if (mappages(pagetable, PGROUNDDOWN(va[i]) + j, PGSIZE, pa[i] + j, perm[i]) < 0) {
+        goto err;
+      }
+    }
   }
   return 0;
 
 err:
-  for (int k = 0; k < i; k++) {
-    uvmunmap(pagetable, va[k], PGROUNDUP(sz[i]) / PGSIZE, 0);
+  for (j = j - PGSIZE; j >= 0; j -= PGSIZE) {
+    uvmunmap(pagetable, PGROUNDDOWN(va[i]) + j, 1, 0);
+  }
+  for (i = i - 1; i >= 0; i--) {
+    uint64 start = PGROUNDDOWN(va[i]);
+    uint64 end = PGROUNDDOWN(va[i] + sz[i] - 1);
+    uvmunmap(pagetable, start, (end - start) / PGSIZE + 1, 0);
   }
   freewalk(pagetable);
   return -1;
@@ -494,7 +504,7 @@ free_kpagetable(pagetable_t pagetable, uint64 kstack_va, uint64 uvmsz)
   };
 
   for (int i = 0; i < VA_COUNT; i++) {
-    uvmunmap(pagetable, va[i], PGROUNDUP(sz[i]) / PGSIZE, 0);
+    uvmunmap(pagetable, PGROUNDDOWN(va[i]), PGROUNDUP(sz[i]) / PGSIZE, 0);
   }
 
   if (uvmsz > 0)
