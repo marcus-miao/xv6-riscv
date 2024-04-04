@@ -18,7 +18,8 @@
 /// prime candidates to the pipe and recurse.
 ///
 /// @return 0 if success. 1 on error.
-int child() {
+__attribute__((noreturn))
+void child() {
   int n;
   
   read(0, &n, sizeof(int));
