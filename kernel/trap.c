@@ -77,8 +77,10 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2) {
+    p->ticks_passed++;
     yield();
+  }
 
   usertrapret();
 }
@@ -105,6 +107,13 @@ usertrapret(void)
   p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
+  
+  if (p->alarm_exist && !p->handler_running && p->ticks_passed >= p->alarm_interval) {
+    p->ticks_passed -= p->alarm_interval;
+    memmove(p->alarmframe, p->trapframe, sizeof(struct trapframe));
+    p->trapframe->epc = p->alarm_handler;
+    p->handler_running = 1;
+  }
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
