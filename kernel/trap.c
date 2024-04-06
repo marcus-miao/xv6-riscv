@@ -50,7 +50,8 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 cause = r_scause();
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,12 +68,44 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (cause == 13 || cause == 15) {
+    // page fault
+
+    // intr_on(); // FIXME: why turning this on will cause sbrkmuch has undeterministic behavior?
+
+    uint64 va = r_stval();
+    if (va >= p->sz) {
+      printf("usertrap(): page fault with va higher than heap top\n");
+      p->killed = 1;
+      goto wrapup;
+    } else if (va <= p->trapframe->sp) {
+      printf("usertrap(): page fault with va below sp\n");
+      p->killed = 1;
+      goto wrapup;
+    }
+
+    char *mem = kalloc();
+    if(mem == 0) {
+      printf("usertrap(): lazyalloc failed due to no available physical memory\n");
+      p->killed = 1;
+      goto wrapup; 
+    }
+    memset(mem, 0, PGSIZE);
+
+    va = PGROUNDDOWN(va);
+    if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      printf("usertrap(): lazyalloc failed due to mappages failure\n");    
+      p->killed = 1; 
+      goto wrapup;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
 
+wrapup:
   if(p->killed)
     exit(-1);
 
