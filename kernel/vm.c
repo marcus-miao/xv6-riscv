@@ -320,18 +320,20 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+
+    // COW: clear PTE_W for both parents and children
+    flags &= ~PTE_W;
+    *pte &= ~PTE_W;
+
+    // map child va to the same pa as his parent
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, i / PGSIZE, 0); // since there isn't any pa allocated yet, don't do free
   return -1;
 }
 
