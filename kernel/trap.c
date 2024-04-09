@@ -50,7 +50,8 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 cause = r_scause();
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,12 +68,41 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (cause == 15) {
+    // write page fault
+    uint64 va = r_stval();
+    pte_t *pte = walk(p->pagetable, va, 0);
+    uint flags = PTE_FLAGS(*pte);
+    if (!(flags & PTE_COW)) {
+      printf("usertrap(): pagefault\n");
+      p->killed = 1;
+      goto wrapup;
+    }
+
+    uint64 oldpa = PTE2PA(*pte);
+
+    char *mem = kalloc();
+    if (mem == 0) {
+      printf("usertrap(): cow failure due to no physical mem available\n");
+      p->killed = 1;
+      goto wrapup;
+    }
+    memmove(mem, (char *)oldpa, PGSIZE);
+    
+    uint perm = flags & (~PTE_COW);
+    perm |= PTE_W;
+    uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 1);
+    *pte = PA2PTE((uint64)mem);
+    *pte |= flags;
+    *pte &= ~PTE_COW;
+    *pte |= PTE_W;
+
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+wrapup:
   if(p->killed)
     exit(-1);
 

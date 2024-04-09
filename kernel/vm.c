@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -311,7 +314,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -321,19 +323,22 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
 
-    // COW: clear PTE_W for both parents and children
+    // COW: clear PTE_W for both parents and children, mark it as cow mapping
     flags &= ~PTE_W;
+    flags |= PTE_COW;
     *pte &= ~PTE_W;
+    *pte |= PTE_COW;
 
     // map child va to the same pa as his parent
     if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
+    add_ref_count(pa, 1);
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 0); // since there isn't any pa allocated yet, don't do free
+  uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
 
@@ -363,6 +368,28 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+
+    pte_t *pte = walk(pagetable, va0, 0);
+    uint flags = PTE_FLAGS(*pte);
+    if (flags & PTE_COW) {
+      struct proc *p = myproc();
+      char *mem = kalloc();
+      if (mem == 0) {
+        printf("copyout(): cow failure due to no physical mem available\n");
+        p->killed = 1;
+        return -1;
+      }
+      memmove(mem, (char *)pa0, PGSIZE);
+      
+      uvmunmap(pagetable, PGROUNDDOWN(va0), 1, 1);
+      *pte = PA2PTE((uint64)mem);
+      *pte |= flags;
+      *pte &= ~PTE_COW;
+      *pte |= PTE_W;
+
+      pa0 = (uint64)mem;
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

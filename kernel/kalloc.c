@@ -23,11 +23,26 @@ struct {
   struct run *freelist;
 } kmem;
 
+// number of physical pages
+#define PHYSICAL_PAGES_COUNT (PHYSTOP - KERNBASE) / PGSIZE
+
+// given pa, get the index of reference count in the ref_array defined below 
+#define REF_COUNT_IDX(pa) ((pa - KERNBASE) / PGSIZE)
+
+int ref_count[PHYSICAL_PAGES_COUNT];
+struct spinlock ref_count_lock;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+
+  // init ref_count array as zero
+  initlock(&ref_count_lock, "ref_count");
+  for (uint64 i = 0; i < PHYSICAL_PAGES_COUNT; i++) {
+    set_ref_count_via_idx(i, 0);
+  }
 }
 
 void
@@ -51,6 +66,15 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  if (get_ref_count((uint64)pa) == 0)
+    goto free;
+
+  add_ref_count((uint64)pa, -1);
+  if (get_ref_count((uint64)pa) > 0) {
+    return;
+  }
+
+free:
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -72,11 +96,61 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    set_ref_count_via_pa((uint64)r, 1);
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void
+add_ref_count(uint64 pa, int delta)
+{
+  if(pa < KERNBASE || pa >= PHYSTOP)
+    panic("add_ref_count");
+
+  acquire(&ref_count_lock);
+  ref_count[REF_COUNT_IDX(pa)] += delta;
+  release(&ref_count_lock);
+}
+
+void
+set_ref_count_via_pa(uint64 pa, int new_count)
+{
+  if (pa < KERNBASE || pa >= PHYSTOP)
+    panic("set_ref_count_via_pa");
+  
+  acquire(&ref_count_lock);
+  ref_count[REF_COUNT_IDX(pa)] = new_count;
+  release(&ref_count_lock);
+}
+
+void
+set_ref_count_via_idx(uint64 idx, int new_count)
+{
+  if (idx >= PHYSICAL_PAGES_COUNT)
+    panic("set_ref_count_via_idx");
+
+  acquire(&ref_count_lock);
+  ref_count[idx] = new_count;
+  release(&ref_count_lock);
+}
+
+
+int
+get_ref_count(uint64 pa)
+{
+  if (pa < KERNBASE || pa >= PHYSTOP)
+    panic("get_ref_count");
+  
+  int count;
+  acquire(&ref_count_lock);
+  count = ref_count[REF_COUNT_IDX(pa)];
+  release(&ref_count_lock);
+
+  return count;
 }
