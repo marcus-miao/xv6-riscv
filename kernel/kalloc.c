@@ -9,7 +9,7 @@
 #include "riscv.h"
 #include "defs.h"
 
-uint64 freerange(void *pa_start, void *pa_end);
+void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -21,17 +21,9 @@ struct run {
 struct mem {
   struct spinlock lock;
   struct run *freelist;
-  uint64 npages; // total number of physical pages (both used and free)
 };
 
-// struct {
-//   struct spinlock lock;
-//   struct run *freelist;
-// } kmem;
-
 struct mem kmem[NCPU]; 
-
-struct spinlock steal;
 
 void
 kinit()
@@ -40,37 +32,25 @@ kinit()
   char buf[BUF_SIZE];
   int id;
 
-  initlock(&steal, "kmem_steal");
-
   // only cpu0 will enter kinit(). so it must init locks for other cpus as well
   for (id = 0; id < NCPU; id++) {
     // clear the buffer by setting all char to null
     memset(buf, 0, BUF_SIZE);
     snprintf(buf, BUF_SIZE, "kmem%d", id);
     initlock(&kmem[id].lock, buf);
-    kmem[id].npages = 0;
     kmem[id].freelist = 0;
   }
 
-  push_off();
-  id = cpuid();
-  pop_off();
-
-  kmem[id].npages = freerange(end, (void*)PHYSTOP);
+  freerange(end, (void*)PHYSTOP);
 }
 
-uint64
+void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  uint64 npages = 0;
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
-    npages++;
-  }
-
-  return npages;
 }
 
 // Free the page of physical memory pointed at by v,
@@ -118,46 +98,21 @@ kalloc(void)
   r = kmem[id].freelist;
   if (r) {
     kmem[id].freelist = r->next;
-  } else {
-    
-    // avoid deadlock where two cpus try stealing other's freelist while holding
-    // its own lock. adding this steal lock ensures that only one cpu can steal
-    // at any given time.
-    acquire(&steal);
+  }
+  release(&kmem[id].lock);
 
-    // try stealing. target amount of free space to steal is set to the same 
-    // as the total number of physical pages used by this cpu. the underlying 
-    // phylosophy here is the same as how to dynamically resize an array in Java.
-    uint64 target = kmem[id].npages == 0 ? 1 : kmem[id].npages;
-    uint64 stolen = 0;
-    struct run *next;
-    for (int otherid = 0; otherid < NCPU && stolen < target; otherid++) {
+  if (!r) {
+    // try stealing.
+    for (int otherid = 0; otherid < NCPU && !r; otherid++) {
       if (otherid == id) continue; // don't steal from myself, avoid deadlock
       acquire(&kmem[otherid].lock);
       r = kmem[otherid].freelist; 
-      while (r) {
-        next = r->next;
-        r->next = kmem[id].freelist;
-        kmem[id].freelist = r;
-        r = next;
-
-        kmem[otherid].npages--;
-        stolen++;
-        if (stolen >= target) break;
+      if (r) {
+        kmem[otherid].freelist = r->next;
       }
-      kmem[otherid].freelist = r;
       release(&kmem[otherid].lock);
     }
-    kmem[id].npages += stolen;
-
-    r = kmem[id].freelist;
-    if (r) {
-      kmem[id].freelist = r->next;
-    }
-
-    release(&steal);
   }
-  release(&kmem[id].lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
