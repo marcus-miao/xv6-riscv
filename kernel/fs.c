@@ -401,6 +401,35 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  bn -= NINDIRECT;
+  if (bn < NDOUBLE_INDRECT) {
+    // load the first level direction table
+    if ((addr = ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX]) == 0) {
+      ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX] = addr = balloc(ip->dev);
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    // load the second level direction table
+    int second_level_direction_idx = bn / NINDIRECT;
+    if ((addr = a[second_level_direction_idx]) == 0) {
+      a[second_level_direction_idx] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    // load the actual data block
+    int block_offset = bn % NINDIRECT;
+    if ((addr = a[block_offset]) == 0) {
+      a[block_offset] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
@@ -430,6 +459,29 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  struct buf *bp1, *bp2;
+  uint *a1, *a2;
+  if (ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX]) {
+    bp1 = bread(ip->dev, ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX]);
+    a1 = (uint*)bp1->data;
+    for (i = 0; i < NINDIRECT; i++) {
+      if (a1[i]) {
+        bp2 = bread(ip->dev, a1[i]);
+        a2 = (uint*)bp2->data;
+        for (j = 0; j < NINDIRECT; j++) {
+          if (a2[j]) {
+            bfree(ip->dev, a2[j]);
+          }
+        }
+        brelse(bp2);
+        bfree(ip->dev, a1[i]);
+      }
+    }
+    brelse(bp1);
+    bfree(ip->dev, ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX]);
+    ip->addrs[DOUBLE_INDRECT_BLOCK_INDEX] = 0;
   }
 
   ip->size = 0;
